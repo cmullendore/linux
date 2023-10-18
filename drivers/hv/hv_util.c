@@ -345,6 +345,33 @@ static void hv_set_host_time(struct work_struct *work)
 }
 
 /*
+ * Due to a bug on Windows hosts, the sync flag may not always be sent when
+ * needed. Force a sync if it's obviously behind.
+ */
+static inline bool hv_implicit_sync(u64 host_time __maybe_unused)
+{
+// #if IS_ENABLED(CONFIG_IMPLICIT_SYNC)
+	struct timespec64 new_ts;
+	struct timespec64 threshold_ts;
+
+	new_ts = ns_to_timespec64(reftime_to_ns(host_time));
+	ktime_get_real_ts64(&threshold_ts);
+
+	//pr_info("TimeSync - Current {%llu, %lu}; New {%llu, %lu}\n", threshold_ts.tv_sec, threshold_ts.tv_nsec, new_ts.tv_sec, new_ts.tv_nsec);
+
+	threshold_ts.tv_sec += 10;
+	if ((new_ts.tv_sec == threshold_ts.tv_sec && new_ts.tv_nsec >= threshold_ts.tv_nsec) ||
+	    (new_ts.tv_sec > threshold_ts.tv_sec))
+	{
+		pr_info("TimeSync - force sync\n");
+		return true;
+	}
+//#endif
+	return false;
+}
+
+
+/*
  * Synchronize time with host after reboot, restore, etc.
  *
  * ICTIMESYNCFLAG_SYNC flag bit indicates reboot, restore events of the VM.
@@ -361,6 +388,7 @@ static inline void adj_guesttime(u64 hosttime, u64 reftime, u8 adj_flags)
 {
 	unsigned long flags;
 	u64 cur_reftime;
+	u64 host_time;
 
 	/*
 	 * Save the adjusted time sample from the host and the snapshot
@@ -380,11 +408,12 @@ static inline void adj_guesttime(u64 hosttime, u64 reftime, u8 adj_flags)
 	 * reftime == cur_reftime on call.
 	 */
 	host_ts.host_time += (cur_reftime - reftime);
+	host_time = host_ts.host_time;
 
 	spin_unlock_irqrestore(&host_ts.lock, flags);
 
 	/* Schedule work to do do_settimeofday64() */
-	if (adj_flags & ICTIMESYNCFLAG_SYNC)
+	if ((adj_flags & ICTIMESYNCFLAG_SYNC) || hv_implicit_sync(host_time))
 		schedule_work(&adj_time_work);
 }
 
